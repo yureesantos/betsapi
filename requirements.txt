@@ -1,0 +1,5 @@
+requests
+python-dotenv
+psycopg2-binary # Para conectar ao PostgreSQL (Supabase)
+pytz
+pandas # Se ainda quiser salvar em Excel ou usar DataFrames

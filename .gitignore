@@ -1,8 +1,16 @@
+<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
+=======
+# Arquivo de configuracao de ambiente - Nao versionar!
+.env
+
+# Arquivos Python compilados
+>>>>>>> c10a240 (Initial commit: Add project structure and base code for BetsAPI data collector)
 __pycache__/
 *.py[cod]
 *$py.class
 
+<<<<<<< HEAD
 # C extensions
 *.so
 
@@ -172,3 +180,18 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+=======
+# Ambiente virtual
+venv/
+.venv/
+ENV/
+env/
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
+
+# Arquivos de IDEs/Editores
+.vscode/
+.idea/
+>>>>>>> c10a240 (Initial commit: Add project structure and base code for BetsAPI data collector)
