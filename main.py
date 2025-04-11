@@ -5,13 +5,13 @@ import sys
 import json  # Para salvar odds como JSONB
 from datetime import datetime, timedelta, timezone
 import pytz
+import argparse  # Para argumentos de linha de comando
 
 from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS
 from api.client import BetsAPIClient
 from db.database import (
     get_db_connection,
-    get_fetch_state,
-    update_fetch_state,
+    delete_old_events,  # Removido get/update_fetch_state por enquanto
     upsert_event,
     insert_odds,
     update_event_odds_status,
@@ -25,8 +25,12 @@ running = True
 def signal_handler(sig, frame):
     """Captura sinais (como Ctrl+C) para parar o loop principal."""
     global running
-    print("\nRecebido sinal de interrupção. Finalizando...")
-    running = False
+    if running:  # Evita múltiplas mensagens se pressionar Ctrl+C várias vezes
+        print("\nRecebido sinal de interrupção. Tentando finalizar graciosamente...")
+        running = False
+    else:
+        print("Finalização forçada.")
+        sys.exit(1)
 
 
 # Registra o handler para SIGINT (Ctrl+C) e SIGTERM
@@ -38,7 +42,7 @@ def processar_odds(odds_summary_data, event_id):
     """Processa os dados de odds e retorna uma lista de dicts para inserção."""
     odds_para_inserir = []
     if not odds_summary_data or odds_summary_data.get("success") != 1:
-        print(f"    -> Sem dados de odds válidos para Event ID: {event_id}")
+        # print(f"    -> Sem dados de odds válidos para Event ID: {event_id}") # Log menos verboso
         return odds_para_inserir, None  # Retorna lista vazia e None timestamp
 
     results = odds_summary_data.get("results", {})
@@ -47,22 +51,24 @@ def processar_odds(odds_summary_data, event_id):
     odds_start = bet365_data.get("odds", {}).get("start", {})  # Odds pré-jogo
 
     if not odds_start:
-        print(f"    -> Sem odds 'start' (pré-jogo) da Bet365 para Event ID: {event_id}")
+        # print(f"    -> Sem odds 'start' (pré-jogo) da Bet365 para Event ID: {event_id}") # Log menos verboso
         return odds_para_inserir, None
 
     # Timestamp das odds (se disponível, senão usaremos o da coleta)
     # A API V2 pode não fornecer timestamp para 'start' odds facilmente, usar None por agora
-    odds_ts = None  # converter_timestamp(odds_start.get('time_str')) se disponível
+    # --- Correção: Buscar timestamp dentro de cada mercado ---
+    # odds_ts = None # converter_timestamp(odds_start.get('time_str')) se disponível
 
     # 1. Mercado 1X2 (ID: 1_1)
     if "1_1" in odds_start:
         market_1x2 = odds_start["1_1"]
+        add_time_ts = converter_timestamp(market_1x2.get("add_time"))
         odds_data = {
             "home": market_1x2.get("home_od"),
             "draw": market_1x2.get("draw_od"),
             "away": market_1x2.get("away_od"),
             "ss": market_1x2.get("ss"),  # Placar no momento da odd (para live)
-            "add_time": market_1x2.get("add_time"),  # Timestamp da odd
+            # 'add_time': add_time_ts # Adicionado como timestamp principal
         }
         # Remove chaves com valor None antes de salvar
         odds_data_clean = {k: v for k, v in odds_data.items() if v is not None}
@@ -72,7 +78,7 @@ def processar_odds(odds_summary_data, event_id):
                     "event_id": event_id,
                     "bookmaker": "Bet365",
                     "odds_market": "prematch_1x2",
-                    "odds_timestamp": converter_timestamp(odds_data_clean.get("add_time")),
+                    "odds_timestamp": add_time_ts,  # Usar o add_time do mercado se disponível
                     "odds_data": json.dumps(odds_data_clean),  # Salva como JSON string
                 }
             )
@@ -80,13 +86,14 @@ def processar_odds(odds_summary_data, event_id):
     # 2. Mercado Handicap Asiático (ID: 1_2)
     if "1_2" in odds_start:
         market_ah = odds_start["1_2"]
+        add_time_ts = converter_timestamp(market_ah.get("add_time"))
         handicap_val = market_ah.get("handicap")
         odds_data = {
             "handicap": handicap_val,
             "home": market_ah.get("home_od"),
             "away": market_ah.get("away_od"),
             "ss": market_ah.get("ss"),
-            "add_time": market_ah.get("add_time"),
+            # 'add_time': add_time_ts
         }
         odds_data_clean = {k: v for k, v in odds_data.items() if v is not None}
         if odds_data_clean and "home" in odds_data_clean and "away" in odds_data_clean:
@@ -95,7 +102,7 @@ def processar_odds(odds_summary_data, event_id):
                     "event_id": event_id,
                     "bookmaker": "Bet365",
                     "odds_market": "prematch_asian_handicap",
-                    "odds_timestamp": converter_timestamp(odds_data_clean.get("add_time")),
+                    "odds_timestamp": add_time_ts,
                     "odds_data": json.dumps(odds_data_clean),
                 }
             )
@@ -103,13 +110,14 @@ def processar_odds(odds_summary_data, event_id):
     # 3. Mercado Over/Under (Gols) (ID: 1_3)
     if "1_3" in odds_start:
         market_ou = odds_start["1_3"]
+        add_time_ts = converter_timestamp(market_ou.get("add_time"))
         line_val = market_ou.get("handicap")  # Linha Over/Under
         odds_data = {
             "line": line_val,
             "over": market_ou.get("over_od"),
             "under": market_ou.get("under_od"),
             "ss": market_ou.get("ss"),
-            "add_time": market_ou.get("add_time"),
+            # 'add_time': add_time_ts
         }
         odds_data_clean = {k: v for k, v in odds_data.items() if v is not None}
         if odds_data_clean and "over" in odds_data_clean and "under" in odds_data_clean:
@@ -118,7 +126,7 @@ def processar_odds(odds_summary_data, event_id):
                     "event_id": event_id,
                     "bookmaker": "Bet365",
                     "odds_market": "prematch_over_under",
-                    "odds_timestamp": converter_timestamp(odds_data_clean.get("add_time")),
+                    "odds_timestamp": add_time_ts,
                     "odds_data": json.dumps(odds_data_clean),
                 }
             )
@@ -130,186 +138,245 @@ def processar_odds(odds_summary_data, event_id):
     return odds_para_inserir, last_odds_update_time
 
 
-def main():
+def processar_jogo(conn, api_client, jogo_data):
+    """Processa os dados de um único jogo e suas odds."""
     global running
-    print("Iniciando coletor de dados BetsAPI...")
-    api_client = BetsAPIClient()
-    fetch_type = "ended_events"  # Poderia ser uma config ou argumento
-    max_pages_per_run = 100  # Limite de páginas por execução para evitar rodar indefinidamente
+    if not running:
+        return False  # Sai se a flag de parada foi acionada
+
+    event_id = jogo_data.get("id")
+    if not event_id:
+        print("Aviso: Jogo sem ID encontrado, pulando.")
+        return True  # Continua processando outros jogos
+
+    print(f"  -> Processando Event ID: {event_id}")
+
+    # Extrair dados básicos
+    league_data = jogo_data.get("league", {})
+    home_data = jogo_data.get("home", {})
+    away_data = jogo_data.get("away", {})
+
+    home_team_name, home_player = extrair_time_jogador(home_data.get("name"))
+    away_team_name, away_player = extrair_time_jogador(away_data.get("name"))
+    event_time = converter_timestamp(jogo_data.get("time"))
+    score = parse_score(jogo_data.get("ss"))
+
+    # Monta dict do evento para o DB
+    event_dict = {
+        "event_id": event_id,  # Será convertido para int em upsert_event
+        "sport_id": jogo_data.get("sport_id", TARGET_SPORT_ID),
+        "league_id": league_data.get("id"),
+        "league_name": league_data.get("name"),
+        "event_timestamp": event_time,
+        "home_team_id": home_data.get("id"),
+        "home_team_name": home_team_name,
+        "home_player_name": home_player,
+        "away_team_id": away_data.get("id"),
+        "away_team_name": away_team_name,
+        "away_player_name": away_player,
+        "final_score": score,
+        "has_odds": None,  # Não definir aqui, deixar o DB manter o valor ou atualizar após buscar odds
+        "last_odds_update": None,
+    }
 
     try:
-        with get_db_connection() as conn:
-            # 1. Obter estado da última execução
-            initial_state = get_fetch_state(conn, fetch_type)
-            if not initial_state:
-                print("Erro crítico: Não foi possível obter ou criar o estado inicial da coleta.")
-                sys.exit(1)  # Sai se não conseguir o estado
+        # 1. Inserir/Atualizar evento no DB
+        upsert_event(conn, event_dict)
+        # print(f"     Evento {event_id} salvo/atualizado.") # Log menos verboso
 
-            current_page = initial_state.get("last_processed_page", 0) + 1
-            last_status = initial_state.get("status", "idle")
-            print(f"Estado inicial: Página={current_page-1}, Status={last_status}")
+        # 2. Buscar e processar Odds
+        odds_summary = api_client.get_event_odds_summary(event_id)
+        if odds_summary:
+            odds_list, last_update_time = processar_odds(odds_summary, event_id)
 
-            # Marca como 'running'
-            update_fetch_state(conn, fetch_type, status="running")
-            conn.commit()  # Garante que o status 'running' seja salvo
+            if odds_list:
+                inserted_count = insert_odds(conn, odds_list)
+                # print(f"     {inserted_count} odds inseridas.") # Log menos verboso
+                # Atualiza o status do evento para indicar que tem odds
+                if inserted_count > 0:
+                    # Usa now() se last_update_time não veio da API
+                    update_time = last_update_time if last_update_time else datetime.now(pytz.utc)
+                    update_event_odds_status(conn, event_id, True, update_time)
+            # else:
+            # print(f"     Nenhuma odd válida processada.") # Log menos verboso
+        # else:
+        # print(f"     Falha ao buscar odds.") # Log menos verboso
 
-            pages_processed_this_run = 0
+        conn.commit()  # Commit após processar este evento com sucesso
+        return True  # Indica sucesso
 
-            while running and pages_processed_this_run < max_pages_per_run:
-                # 2. Buscar página de eventos encerrados
-                event_data = api_client.get_ended_events(page=current_page, sport_id=TARGET_SPORT_ID)
+    except Exception as e:
+        print(f"Erro ao processar evento {event_id} ou suas odds: {e}")
+        conn.rollback()  # Desfaz alterações deste evento
+        # Considerar parar ou continuar? Para um job diário, talvez seja melhor
+        # registrar o erro e continuar com os outros jogos/dias.
+        # Se for um erro crítico (ex: DB inacessível), a exceção vai subir.
+        return False  # Indica falha no processamento deste jogo
 
-                if not event_data or not event_data.get("results"):
-                    print(
-                        f"Nenhum evento encontrado na página {current_page} ou erro na API. Verificando próxima página ou finalizando."
-                    )
-                    # Se não houver mais páginas ('pager' indica isso), ou erro, parar
-                    if (
-                        not event_data
-                        or not event_data.get("pager")
-                        or int(event_data["pager"].get("total", 0))
-                        <= current_page * int(event_data["pager"].get("per_page", 50))
-                    ):
-                        print("Fim dos eventos encontrados ou erro irrecuperável. Finalizando busca.")
-                        update_fetch_state(conn, fetch_type, page=current_page - 1, status="completed")
-                        running = False
-                    else:
-                        # Pode ter sido um erro temporário, tenta a próxima página na próxima execução
-                        print(f"Erro ao buscar página {current_page}, pulando para a próxima na futura execução.")
-                        update_fetch_state(conn, fetch_type, page=current_page - 1, status="error_skipped_page")
-                        running = False  # Parar a execução atual
-                    break  # Sai do loop while
 
-                jogos = event_data.get("results", [])
-                print(f"Processando {len(jogos)} eventos da página {current_page}...")
+def fetch_and_process_day(conn, api_client, target_date):
+    """Busca e processa todos os eventos encerrados para um dia específico."""
+    global running
+    day_str = target_date.strftime("%Y%m%d")
+    print(f"\nIniciando busca para o dia: {day_str}")
 
-                # 3. Processar cada jogo
-                for jogo in jogos:
-                    if not running:
-                        break  # Verifica se recebeu sinal de parada
+    current_page = 1
+    total_jogos_dia = 0
+    falhas_dia = 0
 
-                    event_id = jogo.get("id")
-                    if not event_id:
-                        print("Aviso: Jogo sem ID encontrado, pulando.")
-                        continue
+    while running:
+        event_data = api_client.get_ended_events(page=current_page, sport_id=TARGET_SPORT_ID, day_str=day_str)
 
-                    print(f"\nProcessando Event ID: {event_id}")
+        if not running:
+            break  # Verifica após a chamada de API também
 
-                    # Extrair dados básicos
-                    league_data = jogo.get("league", {})
-                    home_data = jogo.get("home", {})
-                    away_data = jogo.get("away", {})
+        if not event_data:
+            print(f"Erro crítico ao buscar dados para {day_str}, página {current_page}. Abortando dia.")
+            # Poderia implementar retry aqui antes de desistir
+            break
 
-                    home_team_name, home_player = extrair_time_jogador(home_data.get("name"))
-                    away_team_name, away_player = extrair_time_jogador(away_data.get("name"))
-                    event_time = converter_timestamp(jogo.get("time"))
-                    score = parse_score(jogo.get("ss"))
+        jogos = event_data.get("results", [])
+        pager = event_data.get("pager")
 
-                    # Monta dict do evento para o DB
-                    event_dict = {
-                        "event_id": int(event_id),
-                        "sport_id": int(jogo.get("sport_id", TARGET_SPORT_ID)),
-                        "league_id": int(league_data["id"]) if league_data.get("id") else None,
-                        "league_name": league_data.get("name"),
-                        "event_timestamp": event_time,
-                        "home_team_id": int(home_data["id"]) if home_data.get("id") else None,
-                        "home_team_name": home_team_name,
-                        "home_player_name": home_player,
-                        "away_team_id": int(away_data["id"]) if away_data.get("id") else None,
-                        "away_team_name": away_team_name,
-                        "away_player_name": away_player,
-                        "final_score": score,
-                        "has_odds": False,  # Será atualizado após buscar odds
-                        "last_odds_update": None,
-                    }
+        if not jogos:
+            if current_page == 1:
+                print(f"Nenhum jogo encontrado para o dia {day_str}.")
+            else:
+                print(f"Fim dos jogos para o dia {day_str} na página {current_page-1}.")
+            break  # Sai do loop de páginas para este dia
 
-                    # 4. Inserir/Atualizar evento no DB
-                    try:
-                        upsert_event(conn, event_dict)
-                        print(f" -> Evento {event_id} salvo/atualizado no DB.")
+        print(f"Processando {len(jogos)} eventos da página {current_page} para {day_str}...")
+        total_jogos_dia += len(jogos)
 
-                        # 5. Buscar e processar Odds
-                        odds_summary = api_client.get_event_odds_summary(event_id)
-                        if odds_summary:
-                            odds_list, last_update_time = processar_odds(odds_summary, event_id)
+        for jogo_data in jogos:
+            if not running:
+                break
+            sucesso = processar_jogo(conn, api_client, jogo_data)
+            if not sucesso:
+                falhas_dia += 1
+            # Pequena pausa adicional pode ser útil aqui, mesmo com o delay da API
+            time.sleep(0.05)
 
-                            if odds_list:
-                                inserted_count = insert_odds(conn, odds_list)
-                                print(f"    -> {inserted_count} registros de odds inseridos.")
-                                # Atualiza o status do evento para indicar que tem odds
-                                if inserted_count > 0:
-                                    update_event_odds_status(
-                                        conn, event_id, True, last_update_time or datetime.now(pytz.utc)
-                                    )  # Usa now se não tiver timestamp da API
-                            else:
-                                print(f"    -> Nenhuma odd válida processada para evento {event_id}.")
-                                # Poderia marcar como 'sem odds encontradas' no evento aqui?
+        if not running:
+            break  # Verifica após o loop de jogos
 
-                        else:
-                            print(f"    -> Falha ao buscar odds para evento {event_id}.")
-                            # Poderia tentar novamente depois ou marcar o evento
-
-                        conn.commit()  # Commit após processar cada evento com sucesso
-
-                    except Exception as e:
-                        print(f"Erro ao processar evento {event_id} ou suas odds: {e}")
-                        conn.rollback()  # Desfaz alterações do evento atual em caso de erro
-                        # Considerar parar ou continuar dependendo do erro
-                        # Por segurança, vamos parar nesta execução se um evento falhar
-                        update_fetch_state(conn, fetch_type, page=current_page - 1, status="error_processing_event")
-                        conn.commit()
-                        running = False
-                        break  # Sai do loop for jogo
-
-                    # Pequena pausa adicional para garantir
-                    time.sleep(0.1)
-
-                # Fim do loop for jogo
-                if not running:
-                    # Se parou durante o processamento dos jogos, salva a página anterior como última processada
-                    print(f"Interrompido durante a página {current_page}. Salvando estado.")
-                    update_fetch_state(conn, fetch_type, page=current_page - 1, status="paused")
-                    conn.commit()
-                    break  # Sai do loop while
-
-                # 6. Atualizar estado após processar a página inteira com sucesso
-                print(f"Página {current_page} processada com sucesso.")
-                update_fetch_state(conn, fetch_type, page=current_page, status="running")
-                conn.commit()  # Salva o progresso da página
-
+        # Verifica paginação
+        if pager:
+            total_results = int(pager.get("total", 0))
+            per_page = int(pager.get("per_page", 50))  # Assumindo 50 se não vier
+            if current_page * per_page >= total_results:
+                print(f"Todas as páginas ({current_page}) processadas para {day_str}.")
+                break  # Todas as páginas foram processadas
+            else:
                 current_page += 1
-                pages_processed_this_run += 1
+        else:
+            # Se não há pager e houve resultados, assumir que era a única página
+            print(f"Fim dos jogos para {day_str} (sem pager info).")
+            break
 
-                if pages_processed_this_run >= max_pages_per_run:
-                    print(f"Atingido limite de {max_pages_per_run} páginas por execução.")
-                    update_fetch_state(conn, fetch_type, status="paused_max_pages")
-                    conn.commit()
-                    running = False  # Para o loop
+    print(
+        f"Finalizada busca para o dia {day_str}. Total de jogos encontrados: {total_jogos_dia}. Falhas no processamento: {falhas_dia}"
+    )
+    return falhas_dia == 0  # Retorna True se processou o dia sem falhas
 
-            # Fim do loop while
-            if running:  # Se saiu do loop sem ser interrompido ou erro
-                print("Busca concluída ou todas as páginas disponíveis processadas.")
-                final_status = "completed" if pages_processed_this_run < max_pages_per_run else "paused_max_pages"
-                update_fetch_state(conn, fetch_type, page=current_page - 1, status=final_status)
-                conn.commit()
+
+def run_daily_update(conn, api_client):
+    """Executa a limpeza e busca dos últimos 2 dias."""
+    global running
+    print("\n===== Iniciando Atualização Diária =====")
+
+    # 1. Deletar dados antigos (sempre executa)
+    try:
+        delete_old_events(conn, days_to_keep=60)
+        conn.commit()  # Commit após delete bem-sucedido
+    except Exception as e_del:
+        print(f"Erro crítico durante a limpeza de eventos antigos: {e_del}")
+        # Parar a execução se a limpeza falhar pode ser mais seguro
+        running = False
+        return  # Sai da função
+
+    # 2. Buscar dados de ontem e hoje
+    local_tz = pytz.timezone(TIMEZONE)
+    hoje = datetime.now(local_tz)
+    ontem = hoje - timedelta(days=1)
+
+    # Processa ontem primeiro
+    if running:
+        fetch_and_process_day(conn, api_client, ontem)
+
+    # Processa hoje
+    if running:
+        fetch_and_process_day(conn, api_client, hoje)
+
+    print("\n===== Atualização Diária Finalizada =====")
+
+
+def run_backfill(conn, api_client, days_back=60):
+    """Executa a busca histórica para preencher N dias."""
+    global running
+    print(f"\n===== Iniciando Backfill para {days_back} dias =====")
+
+    # 1. Deletar dados antigos (garante que não haja dados > N dias)
+    #    Pode ser opcional no backfill se o banco estiver vazio, mas seguro incluir.
+    try:
+        delete_old_events(conn, days_to_keep=days_back)
+        conn.commit()
+    except Exception as e_del:
+        print(f"Erro crítico durante a limpeza pré-backfill: {e_del}")
+        running = False
+        return
+
+    local_tz = pytz.timezone(TIMEZONE)
+    hoje = datetime.now(local_tz)
+
+    # Loop do dia mais antigo para o mais recente
+    for i in range(days_back, 0, -1):
+        if not running:
+            print("Backfill interrompido.")
+            break
+        target_date = hoje - timedelta(days=i)
+        sucesso_dia = fetch_and_process_day(conn, api_client, target_date)
+        if not sucesso_dia:
+            print(f"Aviso: O dia {target_date.strftime('%Y%m%d')} teve falhas no processamento.")
+            # Poderia parar o backfill aqui ou apenas logar e continuar
+
+    print("\n===== Backfill Finalizado =====")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Coletor de dados da BetsAPI com janela de 60 dias.")
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "backfill"],
+        default="daily",
+        help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica de 60 dias.",
+    )
+    args = parser.parse_args()
+
+    print(f"Executando em modo: {args.mode}")
+    api_client = BetsAPIClient()
+
+    try:
+        # Usar a conexão gerenciada para toda a operação (daily ou backfill)
+        with get_db_connection() as conn:
+            if args.mode == "daily":
+                run_daily_update(conn, api_client)
+            elif args.mode == "backfill":
+                run_backfill(conn, api_client, days_back=60)
 
     except psycopg2.OperationalError:
-        # Erro já tratado e logado em get_db_connection
         print("Erro crítico: Falha na conexão com o banco de dados.")
+        # Em um ambiente como o Render, o job pode falhar e ser tentado novamente
+        sys.exit(1)  # Sai com erro para sinalizar falha ao scheduler
     except Exception as e:
-        print(f"Erro inesperado no loop principal: {e}")
+        print(f"Erro inesperado não tratado na execução principal ({args.mode}): {e}")
         import traceback
 
         traceback.print_exc()
-        # Tenta salvar o estado como erro, se possível
-        try:
-            with get_db_connection() as conn_err:
-                update_fetch_state(conn_err, fetch_type, status="error_unexpected")
-                conn_err.commit()
-        except Exception as db_err:
-            print(f"Não foi possível nem mesmo salvar o estado de erro no DB: {db_err}")
+        sys.exit(1)  # Sai com erro
     finally:
-        print("Coletor finalizado.")
+        status = "concluído" if running else "interrompido"
+        print(f"Coletor ({args.mode}) {status}.")
 
 
 if __name__ == "__main__":

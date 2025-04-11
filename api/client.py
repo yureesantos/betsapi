@@ -52,6 +52,9 @@ class BetsAPIClient:
                     # Tratar erros específicos da API aqui se necessário
                     if "event not found" in error_message.lower():
                         return None  # Evento não encontrado é um caso esperado, não um erro fatal
+                    if "no results" in error_message.lower():  # Tratar "no results for ..." como sucesso vazio
+                        print(f"Info: Nenhum resultado encontrado para {url} com params {params} ({error_message})")
+                        return {"success": 1, "results": [], "pager": None}  # Retorna estrutura vazia
                     last_exception = ValueError(f"API Error: {error_message}")
                     # Espera antes de tentar novamente em caso de erro da API
                     time.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
@@ -85,11 +88,20 @@ class BetsAPIClient:
             pass
         return None  # Retorna None em caso de falha completa
 
-    def get_ended_events(self, page=1, sport_id=1, skip_esports="0"):
-        """Busca eventos encerrados (futebol por padrão)."""
+    def get_ended_events(self, page=1, sport_id=1, skip_esports="0", day_str=None):
+        """
+        Busca eventos encerrados (futebol por padrão).
+        Permite filtrar por dia específico (formato YYYYMMDD).
+        """
         url = f"{self.base_url_v1}/events/ended"
         params = {"sport_id": sport_id, "skip_esports": skip_esports, "page": page}
-        print(f"Buscando eventos encerrados - Página: {page}")
+        # Adiciona o parâmetro 'day' se fornecido
+        if day_str:
+            params["day"] = day_str
+            print(f"Buscando eventos encerrados - Dia: {day_str}, Página: {page}")
+        else:
+            print(f"Buscando eventos encerrados recentes - Página: {page}")
+
         return self._make_request(url, params)
 
     def get_event_odds_summary(self, event_id):

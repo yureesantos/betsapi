@@ -3,7 +3,9 @@ import psycopg2
 import time
 from psycopg2.extras import DictCursor
 from contextlib import contextmanager
-from config.settings import DATABASE_URL, RETRY_DELAY_SECONDS
+from config.settings import DATABASE_URL, RETRY_DELAY_SECONDS, TIMEZONE
+from datetime import datetime, timedelta
+import pytz
 
 
 @contextmanager
@@ -72,7 +74,13 @@ def get_fetch_state(conn, fetch_type="ended_events"):
                 conn.commit()  # Commit a inserção
                 # Tenta buscar novamente após inserir
                 cur.execute(query, (fetch_type,))
-                return cur.fetchone()
+                state_after_insert = cur.fetchone()
+                if not state_after_insert:  # Se ainda assim não encontrar, pode ser um problema
+                    print(
+                        f"Aviso: Não foi possível criar ou encontrar estado inicial para {fetch_type} após tentativa de inserção."
+                    )
+                    return {"last_processed_page": 0, "last_processed_timestamp": None, "status": "unknown"}
+                return state_after_insert
     except Exception as e:
         print(f"Erro ao buscar estado da coleta: {e}")
         raise
@@ -137,17 +145,27 @@ def upsert_event(conn, event):
         away_team_id = EXCLUDED.away_team_id,
         away_team_name = EXCLUDED.away_team_name,
         away_player_name = EXCLUDED.away_player_name,
-        final_score = COALESCE(EXCLUDED.final_score, events.final_score), -- Mantém placar se já existir
-        has_odds = COALESCE(EXCLUDED.has_odds, events.has_odds), -- Atualiza se vier no novo dado
-        last_odds_update = COALESCE(EXCLUDED.last_odds_update, events.last_odds_update),
-        updated_at = NOW() -- Atualizado pelo trigger ou aqui explicitamente
+        final_score = COALESCE(EXCLUDED.final_score, events.final_score),
+        has_odds = COALESCE(EXCLUDED.has_odds, events.has_odds),
+        last_odds_update = COALESCE(EXCLUDED.last_odds_update, events.last_odds_update)
     RETURNING event_id;
     """
     try:
         with get_cursor(conn) as cur:
+            # Garantir que valores numéricos sejam realmente numéricos ou None
+            event["event_id"] = int(event["event_id"])
+            event["sport_id"] = int(event["sport_id"]) if event.get("sport_id") is not None else None
+            event["league_id"] = int(event["league_id"]) if event.get("league_id") is not None else None
+            event["home_team_id"] = int(event["home_team_id"]) if event.get("home_team_id") is not None else None
+            event["away_team_id"] = int(event["away_team_id"]) if event.get("away_team_id") is not None else None
+
             cur.execute(query, event)
             result = cur.fetchone()
             return result["event_id"] if result else None
+    except ValueError as ve:
+        print(f"Erro de conversão de tipo ao preparar evento {event.get('event_id', 'N/A')}: {ve}")
+        print(f"Dados do evento: {event}")
+        raise
     except Exception as e:
         print(f"Erro ao inserir/atualizar evento {event.get('event_id', 'N/A')}: {e}")
         # print(f"Dados do evento: {event}") # Descomentar para depuração
@@ -160,43 +178,37 @@ def insert_odds(conn, odds_list):
     if not odds_list:
         return 0
 
-    query = """
+    # Query para inserir UMA linha, usada dentro do loop para tratamento individual
+    query_single = """
     INSERT INTO odds (
         event_id, bookmaker, odds_market, odds_timestamp, odds_data, collection_timestamp
     ) VALUES (
         %(event_id)s, %(bookmaker)s, %(odds_market)s, %(odds_timestamp)s, %(odds_data)s, NOW()
     )
-    ON CONFLICT DO NOTHING; -- Evita duplicatas exatas se rodar novamente, mas pode ser necessário refinar
+    ON CONFLICT DO NOTHING; -- Evita duplicatas exatas
     """
     inserted_count = 0
-    try:
-        with get_cursor(conn) as cur:
-            # psycopg2 executemany é mais eficiente para múltiplas inserções
-            # Precisamos converter a lista de dicts para lista de tuplas na ordem correta
-            values = [
-                (
-                    o["event_id"],
-                    o.get("bookmaker", "Bet365"),
-                    o["odds_market"],
-                    o.get("odds_timestamp"),
-                    o["odds_data"],
-                )
-                for o in odds_list
-            ]
-            # Reconstruir a query para executemany
-            query_many = """
-            INSERT INTO odds (event_id, bookmaker, odds_market, odds_timestamp, odds_data, collection_timestamp)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-            ON CONFLICT DO NOTHING;
-            """
-            cur.executemany(query_many, values)
-            inserted_count = cur.rowcount  # Número de linhas afetadas
-            # print(f"Inserido {inserted_count} registros de odds para evento {odds_list[0]['event_id']}.")
-    except Exception as e:
-        print(f"Erro ao inserir odds para evento {odds_list[0].get('event_id', 'N/A')}: {e}")
-        # print(f"Dados das odds: {odds_list}") # Descomentar para depuração
-        # conn.rollback() # Rollback gerenciado pelo context manager
-        raise
+    with get_cursor(conn) as cur:
+        for odds_item in odds_list:
+            try:
+                # Garantir tipos corretos
+                odds_item["event_id"] = int(odds_item["event_id"])
+                # odds_data já deve ser string JSON
+
+                cur.execute(query_single, odds_item)
+                if cur.rowcount > 0:
+                    inserted_count += 1
+            except ValueError as ve:
+                print(f"Erro de tipo ao preparar odds para evento {odds_item.get('event_id', 'N/A')}: {ve}")
+                print(f"Dados da odd: {odds_item}")
+                # Pula esta odd específica, mas continua as outras
+            except Exception as e:
+                print(f"Erro ao inserir odd para evento {odds_item.get('event_id', 'N/A')}: {e}")
+                print(f"Dados da odd: {odds_item}")
+                # Considerar se deve parar tudo ou apenas pular esta odd
+                # Por enquanto, vamos pular esta e continuar
+
+    # print(f"Inserido {inserted_count} / {len(odds_list)} registros de odds para evento {odds_list[0]['event_id']} (após tratamento individual).")
     return inserted_count
 
 
@@ -209,8 +221,38 @@ def update_event_odds_status(conn, event_id, has_odds, last_update_time):
     """
     try:
         with get_cursor(conn) as cur:
-            cur.execute(query, (has_odds, last_update_time, event_id))
+            cur.execute(query, (has_odds, last_update_time, int(event_id)))  # Garante ID int
             # print(f"Status das odds atualizado para evento {event_id}: has_odds={has_odds}")
     except Exception as e:
         print(f"Erro ao atualizar status das odds para evento {event_id}: {e}")
         raise
+
+
+def delete_old_events(conn, days_to_keep=60):
+    """Deleta eventos mais antigos que um número específico de dias."""
+    if days_to_keep <= 0:
+        print("Erro: Número de dias para manter deve ser positivo.")
+        return 0
+
+    # Calcula a data de corte no timezone local configurado
+    local_tz = pytz.timezone(TIMEZONE)
+    cutoff_date_local = datetime.now(local_tz) - timedelta(days=days_to_keep)
+    # Converte para UTC para comparar com TIMESTAMPTZ no banco
+    cutoff_date_utc = cutoff_date_local.astimezone(pytz.utc)
+
+    # Deleta baseado no timestamp do evento
+    query = "DELETE FROM events WHERE event_timestamp < %s;"
+    deleted_count = 0
+    print(f"Deletando eventos com timestamp anterior a {cutoff_date_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}...")
+
+    try:
+        with get_cursor(conn) as cur:
+            cur.execute(query, (cutoff_date_utc,))
+            deleted_count = cur.rowcount
+        # Commit gerenciado pelo 'with get_db_connection'
+        print(f" -> {deleted_count} eventos antigos deletados (odds associadas também via CASCADE).")
+        return deleted_count
+    except Exception as e:
+        print(f"Erro ao deletar eventos antigos: {e}")
+        # conn.rollback() # Rollback gerenciado pelo context manager
+        raise  # Re-levanta a exceção para ser tratada no main
