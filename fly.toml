@@ -1,57 +1,23 @@
-# fly.toml app configuration file for betsapi-floral-rain-1393
-# Corrected for a scheduled background task
+# fly.toml app configuration file para betsapi-floral-rain-1393
 
-app = 'betsapi-floral-rain-1393' # Confirme se este é o nome correto do seu app
-primary_region = 'gig'           # Confirme se esta é a região desejada
+app = 'betsapi-floral-rain-1393'
+primary_region = 'gig'
 
-[build]
-# Nenhuma configuração de build específica necessária se estiver usando Dockerfile
-# Se precisar passar argumentos para o build:
-# [build.args]
-#   SOME_ARG = "value"
-
-# REMOVA OU COMENTE a seção [http_service] inteira, pois não é um serviço web
-# [http_service]
-#   internal_port = 8080
-#   force_https = true
-#   auto_stop_machines = true
-#   auto_start_machines = true
-#   min_machines_running = 0
-#   processes = ["app"]
-
-# ADICIONE a seção [processes] para definir seu worker
+# Configuração simplificada apenas para backfill
 [processes]
-# Nome do processo (pode ser 'app', 'worker', 'collector', etc.)
-# O comando será pego do CMD do Dockerfile se não especificado aqui.
-# Se quiser ser explícito: worker = "python main.py --mode daily"
-worker = "python main.py --mode daily"
-# Define o agendamento para este processo
-schedule = "5 3 * * *" # Roda às 3:05 UTC diariamente (definindo horário específico)
-# Ou para um horário específico (ex: 3:05 UTC):
-# schedule = "5 3 * * *"
+app = "python main.py --mode backfill --workers 4"
 
-# Worker de backfill (será acionado sob demanda, não agendado)
-backfill = "python main.py --mode backfill"
-# Sem schedule = não roda automaticamente, apenas sob demanda
+# Desativar a criação de máquinas standby
+[deploy]
+strategy = "immediate"
 
-# A seção [[vm]] pode ser mantida se você precisar de configurações específicas
-# mas para começar, pode ser omitida e usar os padrões do Fly.io
-# Se precisar de mais memória/cpu, descomente e ajuste:
-# [[vm]]
-#  memory = '1gb'
-#  cpu_kind = 'shared'
-#  cpus = 1
+[experimental]
+enable_machines = true
+auto_rollback = false
 
-# VM para processo diário (baixo custo, suficiente para daily)
+# VM para backfill
 [[vm]]
-  app = "worker"
-  memory = "512mb"
-  cpu_kind = "shared"
-  cpus = 1
-
-# VM para processo de backfill (recursos elevados para processamento rápido)
-[[vm]]
-  app = "backfill"
-  memory = "4gb"
-  cpu_kind = "performance"
-  cpus = 4
+cpu_kind = "performance"
+cpus = 4
+memory = "8192mb"
+processes = ["app"]

@@ -13,6 +13,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Lista e destrói máquinas existentes antes de fazer o deploy
+      - name: List current machines
+        run: flyctl machine list -a betsapi-floral-rain-1393
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Destroy existing machines (if any)
+        run: |
+          existing_machines=$(flyctl machine list -a betsapi-floral-rain-1393 -j | jq -r '.[] | .id')
+          for machine_id in $existing_machines; do
+            echo "Destroying machine $machine_id"
+            flyctl machine destroy $machine_id -a betsapi-floral-rain-1393 -y
+          done
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # Faz o deploy usando o flyctl deploy que utilizará as configurações do fly.toml
       - name: Deploy to fly.io
         run: flyctl deploy --remote-only
         env:
