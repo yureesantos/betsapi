@@ -9,7 +9,7 @@ import argparse  # Para argumentos de linha de comando
 import concurrent.futures  # Para processamento paralelo
 import traceback
 
-from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS
+from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS, ESOCCER_LEAGUE_IDS
 from api.client import BetsAPIClient
 from db.database import (
     get_db_connection,
@@ -38,6 +38,12 @@ def signal_handler(sig, frame):
 # Registra o handler para SIGINT (Ctrl+C) e SIGTERM
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+
+def deve_processar_liga(league_id):
+    """Verifica se a liga é de eSoccer com base no ID."""
+    # Verifica se o ID da liga está na lista de IDs de eSoccer
+    return league_id in ESOCCER_LEAGUE_IDS
 
 
 def processar_odds(odds_summary_data, event_id):
@@ -151,10 +157,17 @@ def processar_jogo(conn, api_client, jogo_data):
         print("Aviso: Jogo sem ID encontrado, pulando.")
         return True  # Continua processando outros jogos
 
-    print(f"  -> Processando Event ID: {event_id}")
+    # Verificar se o jogo é de eSoccer
+    league_data = jogo_data.get("league", {})
+    league_id = league_data.get("id")
+
+    if not league_id or not deve_processar_liga(league_id):
+        # Pulamos silenciosamente jogos que não são de eSoccer
+        return True  # Continua processando outros jogos
+
+    print(f"  -> Processando Event ID: {event_id} (eSoccer)")
 
     # Extrair dados básicos
-    league_data = jogo_data.get("league", {})
     home_data = jogo_data.get("home", {})
     away_data = jogo_data.get("away", {})
 
@@ -167,7 +180,7 @@ def processar_jogo(conn, api_client, jogo_data):
     event_dict = {
         "event_id": event_id,  # Será convertido para int em upsert_event
         "sport_id": jogo_data.get("sport_id", TARGET_SPORT_ID),
-        "league_id": league_data.get("id"),
+        "league_id": league_id,
         "league_name": league_data.get("name"),
         "event_timestamp": event_time,
         "home_team_id": home_data.get("id"),
@@ -224,6 +237,7 @@ def fetch_and_process_day(conn, api_client, target_date):
 
     current_page = 1
     total_jogos_dia = 0
+    total_esoccer_dia = 0  # Contador para jogos de eSoccer
     falhas_dia = 0
 
     while running:
@@ -247,39 +261,57 @@ def fetch_and_process_day(conn, api_client, target_date):
                 print(f"Fim dos jogos para o dia {day_str} na página {current_page-1}.")
             break  # Sai do loop de páginas para este dia
 
-        print(f"Processando {len(jogos)} eventos da página {current_page} para {day_str}...")
-        total_jogos_dia += len(jogos)
+        # Contagem de jogos de eSoccer na página atual
+        esoccer_na_pagina = sum(1 for jogo in jogos if jogo.get("league", {}).get("id") in ESOCCER_LEAGUE_IDS)
 
-        for jogo_data in jogos:
+        print(
+            f"Processando {len(jogos)} eventos da página {current_page} para {day_str} (sendo {esoccer_na_pagina} de eSoccer)..."
+        )
+
+        processados = 0
+        falhas = 0
+
+        for jogo in jogos:
             if not running:
+                break  # Verifica antes de cada jogo
+
+            result = processar_jogo(conn, api_client, jogo)
+            # A função processar_jogo já filtra e processa apenas jogos de eSoccer
+            # Se não for eSoccer, ela retorna True sem fazer nada
+
+            if jogo.get("league", {}).get("id") in ESOCCER_LEAGUE_IDS:
+                if result:
+                    processados += 1
+                else:
+                    falhas += 1
+
+        total_jogos_dia += len(jogos)
+        total_esoccer_dia += esoccer_na_pagina
+        falhas_dia += falhas
+
+        # Verificar se há mais páginas
+        if pager and "page" in pager and "total_pages" in pager:
+            current_page = int(pager["page"]) + 1
+            if current_page > int(pager["total_pages"]):
+                print(f"Fim das páginas para o dia {day_str}.")
                 break
-            sucesso = processar_jogo(conn, api_client, jogo_data)
-            if not sucesso:
-                falhas_dia += 1
-            # Pequena pausa adicional pode ser útil aqui, mesmo com o delay da API
-            time.sleep(0.05)
-
-        if not running:
-            break  # Verifica após o loop de jogos
-
-        # Verifica paginação
-        if pager:
-            total_results = int(pager.get("total", 0))
-            per_page = int(pager.get("per_page", 50))  # Assumindo 50 se não vier
-            if current_page * per_page >= total_results:
-                print(f"Todas as páginas ({current_page}) processadas para {day_str}.")
-                break  # Todas as páginas foram processadas
-            else:
-                current_page += 1
         else:
-            # Se não há pager e houve resultados, assumir que era a única página
-            print(f"Fim dos jogos para {day_str} (sem pager info).")
+            print(f"Aviso: Informações de paginação ausentes ou inválidas. Abortando após primeira página.")
             break
 
+        # Pausa para evitar problemas de rate limit
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    # Resumo do dia
+    print(f"\nResumo para {day_str}:")
+    print(f"  Total de jogos buscados: {total_jogos_dia}")
     print(
-        f"Finalizada busca para o dia {day_str}. Total de jogos encontrados: {total_jogos_dia}. Falhas no processamento: {falhas_dia}"
+        f"  Jogos de eSoccer: {total_esoccer_dia} ({(total_esoccer_dia/total_jogos_dia*100) if total_jogos_dia > 0 else 0:.1f}%)"
     )
-    return falhas_dia == 0  # Retorna True se processou o dia sem falhas
+    print(f"  Jogos de eSoccer processados com sucesso: {total_esoccer_dia - falhas_dia}")
+    print(f"  Falhas: {falhas_dia}")
+
+    return total_esoccer_dia - falhas_dia  # Retorna apenas jogos de eSoccer processados com sucesso
 
 
 def run_daily_update(conn, api_client):

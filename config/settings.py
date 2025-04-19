@@ -21,6 +21,16 @@ REQUEST_DELAY_SECONDS = 1.1  # Tempo de espera entre requisições API (evitar r
 MAX_RETRIES = 3  # Máximo de tentativas para requisições falhas
 RETRY_DELAY_SECONDS = 5  # Tempo de espera antes de tentar novamente
 
+# IDs das ligas de eSoccer
+# Lista extraída da análise do arquivo futebol_data_skip_esports_0.json
+ESOCCER_LEAGUE_IDS = [
+    "38439",  # Esoccer Battle Volta - 6 mins play
+    "37298",  # Esoccer H2H GG League - 8 mins play
+    "22614",  # Esoccer Battle - 8 mins play
+    "23114",  # Esoccer GT Leagues – 12 mins play
+    "33440",  # Esoccer Adriatic League - 10 mins play
+]
+
 # Validações básicas
 if not BETSAPI_TOKEN:
     raise ValueError("Erro: A variável de ambiente BETSAPI_TOKEN não está definida.")
