@@ -25,7 +25,7 @@ jobs:
           existing_machines=$(flyctl machine list -a betsapi-floral-rain-1393 -j | jq -r '.[] | .id')
           for machine_id in $existing_machines; do
             echo "Destroying machine $machine_id"
-            flyctl machine destroy $machine_id -a betsapi-floral-rain-1393 -y
+            flyctl machine destroy $machine_id -a betsapi-floral-rain-1393 -f
           done
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
