@@ -31,6 +31,15 @@ ESOCCER_LEAGUE_IDS = [
     "33440",  # Esoccer Adriatic League - 10 mins play
 ]
 
+# Nomes das ligas correspondentes aos IDs acima
+ESOCCER_LEAGUE_NAMES = [
+    "Esoccer Battle Volta - 6 mins play",
+    "Esoccer H2H GG League - 8 mins play",
+    "Esoccer Battle - 8 mins play",
+    "Esoccer GT Leagues – 12 mins play",
+    "Esoccer Adriatic League - 10 mins play",
+]
+
 # Validações básicas
 if not BETSAPI_TOKEN:
     raise ValueError("Erro: A variável de ambiente BETSAPI_TOKEN não está definida.")

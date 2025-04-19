@@ -9,7 +9,7 @@ import argparse  # Para argumentos de linha de comando
 import concurrent.futures  # Para processamento paralelo
 import traceback
 
-from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS, ESOCCER_LEAGUE_IDS
+from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS, ESOCCER_LEAGUE_IDS, ESOCCER_LEAGUE_NAMES
 from api.client import BetsAPIClient
 from db.database import (
     get_db_connection,
@@ -345,105 +345,153 @@ def run_daily_update(conn, api_client):
     print("\n===== Atualização Diária Finalizada =====")
 
 
-def process_day_parallel(day_info):
-    """Wrapper para processar um dia em paralelo usando ThreadPoolExecutor."""
-    target_date, api_client = day_info
-
-    day_str = target_date.strftime("%Y%m%d")
-    try:
-        # Cada thread precisa de sua própria conexão ao DB
-        with get_db_connection() as conn:
-            result = fetch_and_process_day(conn, api_client, target_date)
-            return day_str, result
-    except Exception as e:
-        print(f"Erro fatal ao processar dia {day_str}: {e}")
-        traceback.print_exc()
-        return day_str, False
-
-
 def run_backfill_parallel(conn, api_client, days_back=60, workers=4):
-    """Executa a busca histórica em paralelo para preencher N dias."""
+    """
+    Executa um backfill paralelo para os últimos N dias.
+    Utiliza um ThreadPoolExecutor para processar múltiplos dias simultaneamente.
+    """
     global running
-    print(f"\n===== Iniciando Backfill Paralelo para {days_back} dias com {workers} workers =====")
 
-    # 1. Deletar dados antigos (garante que não haja dados > N dias)
-    try:
-        delete_old_events(conn, days_to_keep=days_back)
-        conn.commit()
-        print(f"Limpeza de dados antigos concluída (mantendo últimos {days_back} dias).")
-    except Exception as e_del:
-        print(f"Erro crítico durante a limpeza pré-backfill: {e_del}")
-        running = False
-        return
+    # Calcula as datas de início e fim do período de backfill
+    end_date = datetime.now(pytz.timezone(TIMEZONE)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_date = end_date - timedelta(days=days_back)
 
-    if not running:
-        return
+    print(f"\n===== Iniciando Backfill para os últimos {days_back} dias =====")
+    print(f"Período: {start_date.strftime('%Y-%m-%d')} até {end_date.strftime('%Y-%m-%d')}")
+    print(f"Usando {workers} workers para processamento paralelo")
+    print(f"Buscando apenas ligas de eSoccer: {ESOCCER_LEAGUE_IDS}")
 
-    # 2. Preparar a lista de dias a processar
-    local_tz = pytz.timezone(TIMEZONE)
-    hoje = datetime.now(local_tz)
-
-    # Dividir em chunks para processamento mais controlado:
-    # Podempos processar 'workers' dias simultaneamente
+    # Cria uma lista das datas a processar (mais recentes primeiro)
     days_to_process = []
-    for i in range(days_back, 0, -1):
-        target_date = hoje - timedelta(days=i)
-        days_to_process.append((target_date, api_client))
+    current_date = end_date
+    while current_date >= start_date and running:
+        days_to_process.append(current_date)
+        current_date -= timedelta(days=1)
 
-    # 3. Processar os dias em paralelo usando ThreadPoolExecutor
-    # ThreadPoolExecutor é a melhor escolha aqui porque o código é I/O bound
-    # (principalmente esperando por chamadas de API e banco de dados)
-    total_successes = 0
-    total_failures = 0
+    # Cria uma lista de tarefas combinando dias e ligas
+    tasks = []
+    for day in days_to_process:
+        for league_id in ESOCCER_LEAGUE_IDS:
+            tasks.append({"day": day, "league_id": league_id})
 
-    # Dividir o backfill em chunks para melhor controle
-    chunk_size = workers
-    chunks = [days_to_process[i : i + chunk_size] for i in range(0, len(days_to_process), chunk_size)]
+    print(f"Total de tarefas a processar: {len(tasks)} (dias × ligas)")
 
-    print(f"Backfill dividido em {len(chunks)} chunks de até {chunk_size} dias cada.")
+    # Criar uma conexão separada para cada worker
+    def get_connection():
+        return get_db_connection()  # Função que cria uma nova conexão com o banco
 
-    # Processar cada chunk
-    chunk_num = 1
-    for chunk in chunks:
+    # Cria um executor de threads com o número solicitado de workers
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        # Função que será executada para cada tarefa
+        def process_task(task):
+            if not running:
+                return None
+
+            day = task["day"]
+            league_id = task["league_id"]
+
+            # Cria uma conexão separada para esta thread
+            thread_conn = get_connection()
+            try:
+                # Cria um novo cliente API para esta thread (opcional, mas pode ajudar a evitar problemas)
+                thread_api = BetsAPIClient()
+
+                # Invoca a função que busca e processa os dados para um dia e liga específicos
+                return fetch_and_process_league_day(thread_conn, thread_api, day, league_id)
+            except Exception as e:
+                print(f"Erro ao processar dia {day.strftime('%Y%m%d')} e liga {league_id}: {e}")
+                print(traceback.format_exc())
+                thread_conn.rollback()
+                return None
+            finally:
+                thread_conn.close()
+
+        # Mapeia as tarefas para execução paralela
+        results = list(executor.map(process_task, tasks))
+
+    # Calcula estatísticas do processamento
+    total_processed = sum([r for r in results if r is not None])
+    print("\n===== Backfill Concluído =====")
+    print(f"Total de jogos processados: {total_processed}")
+    return total_processed
+
+
+def fetch_and_process_league_day(conn, api_client, target_date, league_id):
+    """Busca e processa todos os eventos de uma liga específica para um dia específico."""
+    global running
+    day_str = target_date.strftime("%Y%m%d")
+    league_name = next(
+        (name for id, name in zip(ESOCCER_LEAGUE_IDS, ESOCCER_LEAGUE_NAMES) if id == league_id), league_id
+    )
+
+    print(f"\nIniciando busca para o dia {day_str}, liga {league_name} (ID: {league_id})")
+
+    current_page = 1
+    total_jogos = 0
+    falhas = 0
+
+    while running:
+        event_data = api_client.get_ended_events(
+            page=current_page,
+            sport_id=TARGET_SPORT_ID,
+            day_str=day_str,
+            league_id=league_id,  # Filtra diretamente pela liga na API
+        )
+
         if not running:
-            print("Backfill interrompido.")
             break
 
-        print(f"\n----- Processando chunk {chunk_num}/{len(chunks)} ({len(chunk)} dias) -----")
+        if not event_data:
+            print(f"Erro crítico ao buscar dados para {day_str}, liga {league_id}, página {current_page}.")
+            break
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            # Inicia o processamento paralelo
-            future_to_day = {executor.submit(process_day_parallel, day_info): day_info[0] for day_info in chunk}
+        jogos = event_data.get("results", [])
+        pager = event_data.get("pager")
 
-            # Coleta resultados à medida que são concluídos
-            for future in concurrent.futures.as_completed(future_to_day):
-                if not running:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
+        if not jogos:
+            if current_page == 1:
+                print(f"Nenhum jogo encontrado para o dia {day_str}, liga {league_id}.")
+            else:
+                print(f"Fim dos jogos para o dia {day_str}, liga {league_id} na página {current_page-1}.")
+            break
 
-                day = future_to_day[future]
-                try:
-                    day_str, success = future.result()
-                    if success:
-                        total_successes += 1
-                        print(f"Dia {day_str} processado com sucesso.")
-                    else:
-                        total_failures += 1
-                        print(f"Dia {day_str} teve falhas no processamento.")
-                except Exception as e:
-                    total_failures += 1
-                    print(f"Erro ao processar dia {day.strftime('%Y%m%d')}: {e}")
+        print(
+            f"Processando {len(jogos)} eventos de eSoccer da página {current_page} para {day_str}, liga {league_id}..."
+        )
 
-        chunk_num += 1
+        processados = 0
+        falhas_pagina = 0
 
-    # Cria uma linha de resumo clara
-    print("\n===== Backfill Finalizado =====")
-    print(f"Dias processados com sucesso: {total_successes}")
-    print(f"Dias com falhas: {total_failures}")
-    if total_failures > 0:
-        print("Recomendação: Verifique os logs para detalhes sobre os dias que falharam.")
+        for jogo in jogos:
+            if not running:
+                break
 
-    return total_failures == 0  # Sucesso se não houver falhas
+            result = processar_jogo(conn, api_client, jogo)
+            if result:
+                processados += 1
+            else:
+                falhas_pagina += 1
+
+        total_jogos += processados
+        falhas += falhas_pagina
+
+        # Verificar se há mais páginas
+        if pager and "page" in pager and "total_pages" in pager:
+            current_page = int(pager["page"]) + 1
+            if current_page > int(pager["total_pages"]):
+                print(f"Fim das páginas para o dia {day_str}, liga {league_id}.")
+                break
+        else:
+            print(
+                f"Aviso: Informações de paginação ausentes. Abortando após primeira página para {day_str}, liga {league_id}."
+            )
+            break
+
+        # Pausa para evitar problemas de rate limit
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    print(f"Concluído dia {day_str}, liga {league_id}: {total_jogos} jogos processados, {falhas} falhas.")
+    return total_jogos
 
 
 def main():

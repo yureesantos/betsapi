@@ -88,19 +88,25 @@ class BetsAPIClient:
             pass
         return None  # Retorna None em caso de falha completa
 
-    def get_ended_events(self, page=1, sport_id=1, skip_esports=0, day_str=None):
+    def get_ended_events(self, page=1, sport_id=1, skip_esports=0, day_str=None, league_id=None):
         """
         Busca eventos encerrados (futebol por padrão).
-        Permite filtrar por dia específico (formato YYYYMMDD).
+        Permite filtrar por dia específico (formato YYYYMMDD) e liga específica.
         """
         url = f"{self.base_url_v1}/events/ended"
         params = {"sport_id": sport_id, "skip_esports": skip_esports, "page": page}
+
         # Adiciona o parâmetro 'day' se fornecido
         if day_str:
             params["day"] = day_str
             print(f"Buscando eventos encerrados - Dia: {day_str}, Página: {page}")
         else:
             print(f"Buscando eventos encerrados recentes - Página: {page}")
+
+        # Adiciona o parâmetro 'league_id' se fornecido
+        if league_id:
+            params["league_id"] = league_id
+            print(f"Filtrando por liga ID: {league_id}")
 
         return self._make_request(url, params)
 
