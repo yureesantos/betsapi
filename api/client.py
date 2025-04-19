@@ -88,7 +88,7 @@ class BetsAPIClient:
             pass
         return None  # Retorna None em caso de falha completa
 
-    def get_ended_events(self, page=1, sport_id=1, skip_esports="0", day_str=None):
+    def get_ended_events(self, page=1, sport_id=1, skip_esports=0, day_str=None):
         """
         Busca eventos encerrados (futebol por padrão).
         Permite filtrar por dia específico (formato YYYYMMDD).

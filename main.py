@@ -6,6 +6,8 @@ import json  # Para salvar odds como JSONB
 from datetime import datetime, timedelta, timezone
 import pytz
 import argparse  # Para argumentos de linha de comando
+import concurrent.futures  # Para processamento paralelo
+import traceback
 
 from config.settings import TARGET_SPORT_ID, TIMEZONE, REQUEST_DELAY_SECONDS
 from api.client import BetsAPIClient
@@ -311,36 +313,105 @@ def run_daily_update(conn, api_client):
     print("\n===== Atualização Diária Finalizada =====")
 
 
-def run_backfill(conn, api_client, days_back=60):
-    """Executa a busca histórica para preencher N dias."""
+def process_day_parallel(day_info):
+    """Wrapper para processar um dia em paralelo usando ThreadPoolExecutor."""
+    target_date, api_client = day_info
+
+    day_str = target_date.strftime("%Y%m%d")
+    try:
+        # Cada thread precisa de sua própria conexão ao DB
+        with get_db_connection() as conn:
+            result = fetch_and_process_day(conn, api_client, target_date)
+            return day_str, result
+    except Exception as e:
+        print(f"Erro fatal ao processar dia {day_str}: {e}")
+        traceback.print_exc()
+        return day_str, False
+
+
+def run_backfill_parallel(conn, api_client, days_back=60, workers=4):
+    """Executa a busca histórica em paralelo para preencher N dias."""
     global running
-    print(f"\n===== Iniciando Backfill para {days_back} dias =====")
+    print(f"\n===== Iniciando Backfill Paralelo para {days_back} dias com {workers} workers =====")
 
     # 1. Deletar dados antigos (garante que não haja dados > N dias)
-    #    Pode ser opcional no backfill se o banco estiver vazio, mas seguro incluir.
     try:
         delete_old_events(conn, days_to_keep=days_back)
         conn.commit()
+        print(f"Limpeza de dados antigos concluída (mantendo últimos {days_back} dias).")
     except Exception as e_del:
         print(f"Erro crítico durante a limpeza pré-backfill: {e_del}")
         running = False
         return
 
+    if not running:
+        return
+
+    # 2. Preparar a lista de dias a processar
     local_tz = pytz.timezone(TIMEZONE)
     hoje = datetime.now(local_tz)
 
-    # Loop do dia mais antigo para o mais recente
+    # Dividir em chunks para processamento mais controlado:
+    # Podempos processar 'workers' dias simultaneamente
+    days_to_process = []
     for i in range(days_back, 0, -1):
+        target_date = hoje - timedelta(days=i)
+        days_to_process.append((target_date, api_client))
+
+    # 3. Processar os dias em paralelo usando ThreadPoolExecutor
+    # ThreadPoolExecutor é a melhor escolha aqui porque o código é I/O bound
+    # (principalmente esperando por chamadas de API e banco de dados)
+    total_successes = 0
+    total_failures = 0
+
+    # Dividir o backfill em chunks para melhor controle
+    chunk_size = workers
+    chunks = [days_to_process[i : i + chunk_size] for i in range(0, len(days_to_process), chunk_size)]
+
+    print(f"Backfill dividido em {len(chunks)} chunks de até {chunk_size} dias cada.")
+
+    # Processar cada chunk
+    chunk_num = 1
+    for chunk in chunks:
         if not running:
             print("Backfill interrompido.")
             break
-        target_date = hoje - timedelta(days=i)
-        sucesso_dia = fetch_and_process_day(conn, api_client, target_date)
-        if not sucesso_dia:
-            print(f"Aviso: O dia {target_date.strftime('%Y%m%d')} teve falhas no processamento.")
-            # Poderia parar o backfill aqui ou apenas logar e continuar
 
+        print(f"\n----- Processando chunk {chunk_num}/{len(chunks)} ({len(chunk)} dias) -----")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            # Inicia o processamento paralelo
+            future_to_day = {executor.submit(process_day_parallel, day_info): day_info[0] for day_info in chunk}
+
+            # Coleta resultados à medida que são concluídos
+            for future in concurrent.futures.as_completed(future_to_day):
+                if not running:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+
+                day = future_to_day[future]
+                try:
+                    day_str, success = future.result()
+                    if success:
+                        total_successes += 1
+                        print(f"Dia {day_str} processado com sucesso.")
+                    else:
+                        total_failures += 1
+                        print(f"Dia {day_str} teve falhas no processamento.")
+                except Exception as e:
+                    total_failures += 1
+                    print(f"Erro ao processar dia {day.strftime('%Y%m%d')}: {e}")
+
+        chunk_num += 1
+
+    # Cria uma linha de resumo clara
     print("\n===== Backfill Finalizado =====")
+    print(f"Dias processados com sucesso: {total_successes}")
+    print(f"Dias com falhas: {total_failures}")
+    if total_failures > 0:
+        print("Recomendação: Verifique os logs para detalhes sobre os dias que falharam.")
+
+    return total_failures == 0  # Sucesso se não houver falhas
 
 
 def main():
@@ -351,9 +422,18 @@ def main():
         default="daily",
         help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica de 60 dias.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=4, help="Número de workers para execução paralela (somente no modo backfill)."
+    )
+    parser.add_argument(
+        "--days", type=int, default=60, help="Número de dias para buscar no backfill (padrão: 60 dias)."
+    )
     args = parser.parse_args()
 
     print(f"Executando em modo: {args.mode}")
+    if args.mode == "backfill":
+        print(f"Configuração: {args.days} dias com {args.workers} workers em paralelo.")
+
     api_client = BetsAPIClient()
 
     try:
@@ -362,16 +442,11 @@ def main():
             if args.mode == "daily":
                 run_daily_update(conn, api_client)
             elif args.mode == "backfill":
-                run_backfill(conn, api_client, days_back=60)
+                # Use o modo paralelo com o número de workers especificado
+                run_backfill_parallel(conn, api_client, days_back=args.days, workers=args.workers)
 
-    except psycopg2.OperationalError:
-        print("Erro crítico: Falha na conexão com o banco de dados.")
-        # Em um ambiente como o Render, o job pode falhar e ser tentado novamente
-        sys.exit(1)  # Sai com erro para sinalizar falha ao scheduler
     except Exception as e:
         print(f"Erro inesperado não tratado na execução principal ({args.mode}): {e}")
-        import traceback
-
         traceback.print_exc()
         sys.exit(1)  # Sai com erro
     finally:

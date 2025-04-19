@@ -1,0 +1,16 @@
+    # .dockerignore
+    .git
+    .gitignore
+    .env
+    venv
+    .venv
+    __pycache__
+    *.pyc
+    *.pyo
+    *.pyd
+    .DS_Store
+    Dockerfile
+    .dockerignore
+    README.md
+    cron.log
+    *.xlsx # Ignorar arquivos Excel gerados localmente
