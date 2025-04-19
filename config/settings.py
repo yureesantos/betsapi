@@ -15,7 +15,7 @@ BASE_URL_V2 = "https://api.b365api.com/v2"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Configurações Gerais
-TARGET_SPORT_ID = 3  # eSports (era 1 para Futebol)
+TARGET_SPORT_ID = 1  # Futebol (TOKEN NÃO TEM PERMISSÃO PARA SPORT_ID=3)
 TIMEZONE = "America/Sao_Paulo"
 REQUEST_DELAY_SECONDS = 1.1  # Tempo de espera entre requisições API (evitar rate limit)
 MAX_RETRIES = 3  # Máximo de tentativas para requisições falhas

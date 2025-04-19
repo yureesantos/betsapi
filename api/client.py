@@ -92,6 +92,12 @@ class BetsAPIClient:
         """
         Busca eventos encerrados (futebol por padrão).
         Permite filtrar por dia específico (formato YYYYMMDD) e liga específica.
+
+        Parâmetros importantes:
+        - sport_id=1: Futebol (inclui futebol regular + eSoccer se skip_esports=0)
+        - skip_esports=0: Inclui jogos eSports na resposta (quando sport_id=1)
+        - skip_esports=1: Exclui jogos eSports da resposta (quando sport_id=1)
+        - league_id: Se fornecido, filtra por liga específica (muito eficiente para eSoccer)
         """
         url = f"{self.base_url_v1}/events/ended"
         params = {"sport_id": sport_id, "skip_esports": skip_esports, "page": page}
