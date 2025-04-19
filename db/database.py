@@ -38,6 +38,28 @@ def get_db_connection():
                 conn.close()
 
 
+def create_db_connection():
+    """Cria e retorna uma conexão direta ao banco de dados (sem context manager).
+    Esta função deve ser usada para operações paralelas onde o controle da conexão
+    precisa ser gerenciado manualmente."""
+    retries = 3
+    delay = RETRY_DELAY_SECONDS
+    while retries > 0:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = False  # Exige commit explícito
+            return conn
+        except psycopg2.OperationalError as e:
+            print(f"Erro ao conectar ao banco de dados: {e}. Tentando novamente em {delay}s...")
+            retries -= 1
+            if retries == 0:
+                print("Erro: Não foi possível conectar ao banco de dados após várias tentativas.")
+                raise  # Re-levanta a exceção original se esgotarem as tentativas
+            time.sleep(delay)
+            delay *= 2  # Backoff exponencial simples
+    return None  # Não deveria chegar aqui devido ao raise, mas para clareza
+
+
 @contextmanager
 def get_cursor(conn):
     """Fornece um cursor gerenciado."""
