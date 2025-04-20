@@ -296,7 +296,7 @@ def update_pending_event_scores(conn):
     FROM events 
     WHERE (final_score IS NULL OR final_score = '') 
     AND event_timestamp < %s 
-    AND sport_id = 1
+    -- Removido filtro de sport_id para atualizar todos os eventos pendentes
     ORDER BY event_timestamp DESC;
     """
 

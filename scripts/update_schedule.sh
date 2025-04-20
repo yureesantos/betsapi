@@ -38,7 +38,7 @@ if [ "$HOUR" == "00" ] && [ "$MINUTE" -lt "10" ]; then
     
     # 1. Atualiza todos os jogos do dia
     log "Atualizando jogos do dia"
-    python main.py --mode daily --update-scores-after >> "$LOG_DIR/daily_$TIMESTAMP.log" 2>&1
+    /usr/local/bin/python3 main.py --mode daily --update-scores-after >> "$LOG_DIR/daily_$TIMESTAMP.log" 2>&1
     
     # 2. Atualiza a janela deslizante (remove d-60 e adiciona d+1)
     log "Atualizando janela deslizante (removendo dados antigos e adicionando novos)"
@@ -47,20 +47,20 @@ if [ "$HOUR" == "00" ] && [ "$MINUTE" -lt "10" ]; then
     TOMORROW=$(date -d "tomorrow" +"%Y%m%d")
     
     # Executa backfill somente para amanhã
-    python main.py --mode backfill --days 1 --start-date $TOMORROW --update-scores-after >> "$LOG_DIR/backfill_$TIMESTAMP.log" 2>&1
+    /usr/local/bin/python3 main.py --mode backfill --days 1 --start-date $TOMORROW --update-scores-after >> "$LOG_DIR/backfill_$TIMESTAMP.log" 2>&1
     
     log "Manutenção diária concluída"
 
 # Atualização a cada hora (executa nos minutos 0-5 de cada hora)
 elif [ "$MINUTE" -lt "5" ]; then
     log "Executando atualização horária"
-    python main.py --mode daily >> "$LOG_DIR/hourly_$TIMESTAMP.log" 2>&1
+    /usr/local/bin/python3 main.py --mode daily >> "$LOG_DIR/hourly_$TIMESTAMP.log" 2>&1
     log "Atualização horária concluída"
 
 # Atualização a cada 15 minutos (só atualiza placares)
 else
     log "Executando atualização rápida (apenas placares pendentes)"
-    python main.py --mode update-scores >> "$LOG_DIR/quick_$TIMESTAMP.log" 2>&1
+    /usr/local/bin/python3 main.py --mode update-scores >> "$LOG_DIR/quick_$TIMESTAMP.log" 2>&1
     log "Atualização rápida concluída"
 fi
 
