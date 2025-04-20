@@ -2,20 +2,21 @@
 import os
 from dotenv import load_dotenv
 
-# Carrega as variáveis do arquivo .env na raiz do projeto
+# Carrega as variáveis do arquivo .env na raiz do projeto se existir
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-load_dotenv(dotenv_path=dotenv_path)
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path=dotenv_path)
 
 # Configurações da API
 BETSAPI_TOKEN = os.getenv("BETSAPI_TOKEN")
-BASE_URL_V1 = "https://api.b365api.com/v1"
+BASE_URL_V1 = os.getenv("API_BASE_URL", "https://api.b365api.com/v1")
 BASE_URL_V2 = "https://api.b365api.com/v2"
 
 # Configurações do Banco de Dados
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Configurações Gerais
-TARGET_SPORT_ID = 1  # Futebol (TOKEN NÃO TEM PERMISSÃO PARA SPORT_ID=3)
+TARGET_SPORT_ID = int(os.getenv("SPORT_ID", 3))  # Buscar sport_id do ambiente ou usar 3 (esports)
 TIMEZONE = "America/Sao_Paulo"
 REQUEST_DELAY_SECONDS = 1.1  # Tempo de espera entre requisições API (evitar rate limit)
 MAX_RETRIES = 3  # Máximo de tentativas para requisições falhas
