@@ -324,18 +324,51 @@ def update_pending_event_scores(conn):
                 print(f"Buscando atualização para evento ID: {event_id}")
 
                 try:
-                    # Busca o evento diretamente pelo método implementado no client
-                    event_data = api_client.get_event_details(event_id)
+                    # Endpoint diretamente para não depender do método
+                    endpoint = f"{api_client.base_url_v1}/event/view"
+                    params = {"event_id": event_id}
+
+                    event_data = api_client._make_request(endpoint, params)
+
+                    # Debug para entender o formato retornado
+                    print(f"DEBUG - Formato da resposta: {type(event_data)}")
+                    if event_data:
+                        print(f"DEBUG - Chaves na resposta: {list(event_data.keys())}")
+                        if "results" in event_data:
+                            result_type = type(event_data["results"])
+                            print(f"DEBUG - Tipo de 'results': {result_type}")
+                            if result_type == dict:
+                                print(f"DEBUG - Chaves em 'results': {list(event_data['results'].keys())}")
+                            elif result_type == list and len(event_data["results"]) > 0:
+                                print(f"DEBUG - Primeiro item em 'results' lista: {type(event_data['results'][0])}")
+                                if isinstance(event_data["results"][0], dict):
+                                    print(f"DEBUG - Chaves no primeiro item: {list(event_data['results'][0].keys())}")
 
                     if not event_data or event_data.get("success") != 1:
                         print(f"  → Não foi possível obter dados para o evento ID {event_id}")
                         continue
 
-                    result = event_data.get("results", {})
+                    # Tenta extrair o placar de diferentes formatos possíveis
+                    score = None
+                    results = event_data.get("results", {})
 
-                    # Extrai o placar utilizando a mesma lógica de outras partes do código
-                    ss = result.get("ss", "")
-                    score = parse_score(ss)
+                    # Formato 1: results é um dicionário com chave 'ss'
+                    if isinstance(results, dict) and "ss" in results:
+                        score = parse_score(results.get("ss", ""))
+
+                    # Formato 2: results é uma lista com pelo menos um item que é dicionário com chave 'ss'
+                    elif isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict):
+                        score = parse_score(results[0].get("ss", ""))
+
+                    # Formato 3: results tem uma chave 'scores' que contém o placar
+                    elif isinstance(results, dict) and "scores" in results:
+                        scores = results.get("scores", {})
+                        if isinstance(scores, dict):
+                            # Pode estar em diferentes formatos dependendo do esporte
+                            if "ft" in scores:  # 'ft' = full time
+                                score = scores.get("ft", "")
+                            elif "total" in scores:
+                                score = scores.get("total", "")
 
                     if score:
                         # Atualiza o placar no banco de dados
@@ -350,9 +383,14 @@ def update_pending_event_scores(conn):
                         print(f"  → Evento ID {event_id} atualizado com placar: {score}")
                     else:
                         print(f"  → Evento ID {event_id} ainda sem placar disponível ou formato inválido.")
+                        # Tenta extrair o placar diretamente da resposta completa
+                        print(f"  → Resposta da API: {event_data}")
 
                 except Exception as e:
                     print(f"Erro ao atualizar evento ID {event_id}: {e}")
+                    import traceback
+
+                    print(traceback.format_exc())
                     continue
 
             # Commit após processar todos os eventos
@@ -363,5 +401,8 @@ def update_pending_event_scores(conn):
 
     except Exception as e:
         print(f"Erro ao atualizar placares pendentes: {e}")
+        import traceback
+
+        print(traceback.format_exc())
         conn.rollback()
         raise
