@@ -1,0 +1,8 @@
+# Crontab para execução dos scripts de atualização
+# Para instalar: cat crontab-config.txt | crontab -
+
+# Executa a cada 15 minutos, 24 horas por dia
+*/15 * * * * /app/scripts/update_schedule.sh
+
+# Executa o serviço de limpeza de logs uma vez por semana (domingo às 2h da manhã)
+0 2 * * 0 find /app/logs -name "*.log" -type f -mtime +7 -delete 
