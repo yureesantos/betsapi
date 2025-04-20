@@ -125,6 +125,14 @@ class BetsAPIClient:
         # print(f"Buscando odds summary para Event ID: {event_id}")
         return self._make_request(url, params)
 
+    def get_event_details(self, event_id):
+        """Busca detalhes de um evento específico, incluindo placar."""
+        if not event_id:
+            return None
+        url = f"{self.base_url_v1}/event/view"
+        params = {"event_id": event_id}
+        return self._make_request(url, params)
+
     # --- Métodos potenciais para busca histórica (se a API permitir) ---
     # def get_historical_events(self, date_from, date_to, sport_id=1, page=1):
     #     """Busca eventos históricos por data (exemplo, verificar endpoint real)."""

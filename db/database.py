@@ -315,6 +315,7 @@ def update_pending_event_scores(conn):
 
             # Cria um cliente API para consultar os eventos
             from api.client import BetsAPIClient
+            from utils.helpers import parse_score
 
             api_client = BetsAPIClient()
 
@@ -322,37 +323,33 @@ def update_pending_event_scores(conn):
                 event_id = event["event_id"]
                 print(f"Buscando atualização para evento ID: {event_id}")
 
-                # Constrói um ID de evento para buscar na API
                 try:
-                    # Busca o evento diretamente pelo ID
-                    # Usa o endpoint de detalhes do evento
-                    # Ajuste conforme necessário para a API específica
-                    endpoint = f"{api_client.base_url_v1}/event/view"
-                    params = {"event_id": event_id}
+                    # Busca o evento diretamente pelo método implementado no client
+                    event_data = api_client.get_event_details(event_id)
 
-                    event_data = api_client._make_request(endpoint, params)
-
-                    if event_data and event_data.get("success") == 1 and "results" in event_data:
-                        result = event_data["results"]
-
-                        # Extrai o placar, se disponível
-                        score = result.get("ss", "")
-
-                        if score:
-                            # Atualiza o placar no banco de dados
-                            update_query = """
-                            UPDATE events 
-                            SET final_score = %s, updated_at = NOW() 
-                            WHERE event_id = %s;
-                            """
-
-                            cur.execute(update_query, (score, event_id))
-                            updated_count += 1
-                            print(f"  → Evento ID {event_id} atualizado com placar: {score}")
-                        else:
-                            print(f"  → Evento ID {event_id} ainda sem placar disponível.")
-                    else:
+                    if not event_data or event_data.get("success") != 1:
                         print(f"  → Não foi possível obter dados para o evento ID {event_id}")
+                        continue
+
+                    result = event_data.get("results", {})
+
+                    # Extrai o placar utilizando a mesma lógica de outras partes do código
+                    ss = result.get("ss", "")
+                    score = parse_score(ss)
+
+                    if score:
+                        # Atualiza o placar no banco de dados
+                        update_query = """
+                        UPDATE events 
+                        SET final_score = %s, updated_at = NOW() 
+                        WHERE event_id = %s;
+                        """
+
+                        cur.execute(update_query, (score, event_id))
+                        updated_count += 1
+                        print(f"  → Evento ID {event_id} atualizado com placar: {score}")
+                    else:
+                        print(f"  → Evento ID {event_id} ainda sem placar disponível ou formato inválido.")
 
                 except Exception as e:
                     print(f"Erro ao atualizar evento ID {event_id}: {e}")
