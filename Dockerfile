@@ -2,7 +2,7 @@
 # Use uma imagem base oficial do Python
 FROM python:3.10-slim
 
-# Instala dependências
+# Instala apenas as dependências essenciais
 RUN apt-get update && apt-get install -y \
     cron \
     postgresql-client \
@@ -24,12 +24,17 @@ RUN mkdir -p /app/logs
 # Torna os scripts executáveis
 RUN chmod +x /app/scripts/*.sh
 
-# Configura crontab na imagem para execução a cada 15 minutos
+# Configura crontab diretamente no arquivo do sistema
 RUN echo "*/15 * * * * /app/scripts/update_schedule.sh >> /app/logs/cron_execution.log 2>&1" > /etc/cron.d/betsapi-cron && \
     echo "0 2 * * 0 find /app/logs -name \"*.log\" -type f -mtime +7 -delete" >> /etc/cron.d/betsapi-cron && \
     echo "*/5 * * * * date >> /app/logs/cron_heartbeat.log" >> /etc/cron.d/betsapi-cron && \
     chmod 0644 /etc/cron.d/betsapi-cron && \
     crontab /etc/cron.d/betsapi-cron
+
+# Executa uma verificação inicial para garantir que tudo funciona
+RUN echo "Verificando ambiente..." && \
+    ls -la /app/scripts && \
+    crontab -l
 
 # Comando para iniciar apenas o cron em foreground
 CMD ["cron", "-f"]
