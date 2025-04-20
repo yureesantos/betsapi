@@ -36,9 +36,14 @@ MINUTE=$(date +"%M")
 if [ "$HOUR" == "00" ] && [ "$MINUTE" -lt "10" ]; then
     log "Executando manutenção diária (00h)"
     
-    # Limpa dados antigos e atualiza placares
-    log "Realizando manutenção de banco de dados"
+    # 1. Limpa dados antigos (mantém a janela deslizante de 60 dias)
+    log "Realizando manutenção de banco de dados e limpeza de dados antigos"
     /usr/local/bin/python3 main.py --mode daily --update-scores-after >> "$LOG_DIR/daily_$TIMESTAMP.log" 2>&1
+    
+    # 2. Adiciona dados para o próximo dia (janela deslizante)
+    log "Adicionando dados para o próximo dia (janela deslizante)"
+    TOMORROW=$(date -d "tomorrow" +"%Y%m%d")
+    /usr/local/bin/python3 main.py --mode backfill --days 1 --start-date $TOMORROW >> "$LOG_DIR/window_slide_$TIMESTAMP.log" 2>&1
     
     log "Manutenção diária concluída"
 
