@@ -1,8 +1,14 @@
 # Crontab para execução dos scripts de atualização
 # Para instalar: cat crontab-config.txt | crontab -
 
-# Executa a cada 15 minutos, 24 horas por dia
-*/15 * * * * /app/scripts/update_schedule.sh
+# Executa a cada 2 minutos, 24 horas por dia, buscando novos jogos
+*/2 * * * * /app/scripts/fetch_new_games.sh > /app/logs/fetch_new_games.log 2>&1
+
+# Executa a cada 15 minutos para atualizar placares e limpeza
+*/15 * * * * /app/scripts/update_schedule.sh > /app/logs/cron_execution.log 2>&1
 
 # Executa o serviço de limpeza de logs uma vez por semana (domingo às 2h da manhã)
-0 2 * * 0 find /app/logs -name "*.log" -type f -mtime +7 -delete 
+0 2 * * 0 find /app/logs -name "*.log" -type f -mtime +7 -delete
+
+# Mantém um registro de que o cron está funcionando
+*/5 * * * * date >> /app/logs/cron_heartbeat.log 

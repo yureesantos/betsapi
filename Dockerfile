@@ -25,7 +25,8 @@ RUN mkdir -p /app/logs
 RUN chmod +x /app/scripts/*.sh
 
 # Configura crontab diretamente no arquivo do sistema
-RUN echo "*/15 * * * * /app/scripts/update_schedule.sh >> /app/logs/cron_execution.log 2>&1" > /etc/cron.d/betsapi-cron && \
+RUN echo "*/2 * * * * /app/scripts/fetch_new_games.sh > /app/logs/fetch_new_games.log 2>&1" > /etc/cron.d/betsapi-cron && \
+    echo "*/15 * * * * /app/scripts/update_schedule.sh > /app/logs/cron_execution.log 2>&1" >> /etc/cron.d/betsapi-cron && \
     echo "0 2 * * 0 find /app/logs -name \"*.log\" -type f -mtime +7 -delete" >> /etc/cron.d/betsapi-cron && \
     echo "*/5 * * * * date >> /app/logs/cron_heartbeat.log" >> /etc/cron.d/betsapi-cron && \
     chmod 0644 /etc/cron.d/betsapi-cron && \

@@ -797,9 +797,9 @@ def main():
     parser = argparse.ArgumentParser(description="Coletor de dados da BetsAPI com janela de 60 dias.")
     parser.add_argument(
         "--mode",
-        choices=["daily", "backfill", "update-scores"],
+        choices=["daily", "backfill", "update-scores", "fetch-new-games"],
         default="daily",
-        help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica, 'update-scores' para atualizar placares pendentes.",
+        help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica, 'update-scores' para atualizar placares pendentes, 'fetch-new-games' para buscar apenas novos jogos.",
     )
     parser.add_argument(
         "--workers", type=int, default=4, help="Número de workers para execução paralela (somente no modo backfill)."
@@ -871,6 +871,22 @@ def main():
             # Atualização de placares pendentes usa uma única conexão gerenciada
             with get_db_connection() as conn:
                 update_pending_scores(conn, api_client)
+
+        elif args.mode == "fetch-new-games":
+            # Modo que busca apenas novos jogos, sem atualizar placares ou fazer limpeza
+            print("===== Iniciando busca por novos jogos =====")
+
+            # Busca jogos de hoje e amanhã para garantir cobertura completa
+            local_tz = pytz.timezone(TIMEZONE)
+            hoje = datetime.now(local_tz)
+            amanha = hoje + timedelta(days=1)
+
+            with get_db_connection() as conn:
+                # Busca eventos apenas para hoje e amanhã
+                fetch_and_process_day(conn, api_client, hoje)
+                fetch_and_process_day(conn, api_client, amanha)
+
+            print("===== Busca por novos jogos concluída =====")
 
     except Exception as e:
         print(f"Erro inesperado não tratado na execução principal ({args.mode}): {e}")
