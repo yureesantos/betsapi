@@ -19,6 +19,8 @@ from db.database import (
     insert_odds,
     update_event_odds_status,
     update_pending_event_scores,
+    update_fetch_state,
+    get_fetch_state,
 )
 from utils.helpers import extrair_time_jogador, inverter_handicap, converter_timestamp, parse_score
 
