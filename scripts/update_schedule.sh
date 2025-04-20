@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script para atualização periódica dos dados da BetsAPI
-# Este script deve ser adicionado ao crontab
+# Este script é executado pelo cron a cada 15 minutos
 
 # Configuração de caminhos
 APP_DIR="/app"
@@ -17,7 +17,13 @@ log() {
 }
 
 # Vai para o diretório do aplicativo
-cd $APP_DIR
+cd $APP_DIR || { log "Erro: Não foi possível mudar para o diretório $APP_DIR"; exit 1; }
+
+# Garantir que o arquivo principal está presente
+if [ ! -f "$APP_DIR/main.py" ]; then
+    log "Erro: Arquivo main.py não encontrado em $APP_DIR"
+    exit 1
+fi
 
 # Inicia o log
 log "Iniciando atualização periódica de dados"
@@ -57,6 +63,9 @@ else
     python main.py --mode update-scores >> "$LOG_DIR/quick_$TIMESTAMP.log" 2>&1
     log "Atualização rápida concluída"
 fi
+
+# Limpa logs antigos (mantém últimos 7 dias)
+find "$LOG_DIR" -name "*.log" -type f -mtime +7 -delete
 
 log "Processamento concluído"
 exit 0 

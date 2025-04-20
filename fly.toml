@@ -3,22 +3,20 @@
 app = "betsapi-floral-rain-1393"
 primary_region = "gig"
 
-# Configuração para manter a máquina sempre rodando
+# Configuração para manter o cron como processo principal
 [processes]
-app = "python /app/scripts/http_server.py"  # Servidor HTTP como processo principal
-cron = "cron -f"  # Mantém o cron rodando em foreground
+app = "cron -f"  # Mantém o cron rodando em foreground como processo principal
 
 # Desativar a criação de máquinas standby
 [deploy]
 strategy = "immediate"
-release_command = "./scripts/setup_cron.sh"
 
-# VM para API e processamento
+# VM para processamento agendado
 [[vm]]
 cpu_kind = "shared"
-cpus = 2
-memory = "2048mb"
-processes = ["app", "cron"]
+cpus = 1
+memory = "1024mb"
+processes = ["app"]
 
 [env]
 PORT = "8080"
