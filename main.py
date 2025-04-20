@@ -18,6 +18,7 @@ from db.database import (
     upsert_event,
     insert_odds,
     update_event_odds_status,
+    update_pending_event_scores,
 )
 from utils.helpers import extrair_time_jogador, inverter_handicap, converter_timestamp, parse_score
 
@@ -444,7 +445,64 @@ def run_daily_update(conn, api_client):
     print("\n===== Atualização Diária Finalizada =====")
 
 
-def backfill_esports(start_date_str=None, end_date_str=None, workers=4, limit_days=None, specific_leagues=None):
+def run_scheduled_score_updates(interval_minutes=30):
+    """
+    Função que executa a atualização de placares em intervalos regulares.
+    Esta função deve ser executada em uma thread separada.
+
+    Args:
+        interval_minutes: Intervalo em minutos entre atualizações.
+    """
+    global running
+
+    print(f"Iniciando agendador de atualização de placares (intervalo: {interval_minutes} minutos)")
+
+    while running:
+        try:
+            print(f"\n[Atualização Agendada] Iniciando atualização de placares...")
+
+            # Cria uma nova conexão específica para esta tarefa
+            conn = create_db_connection()
+            api_client = BetsAPIClient()
+
+            try:
+                updated = update_pending_scores(conn, api_client)
+                print(f"[Atualização Agendada] {updated} placares atualizados.")
+            except Exception as e:
+                print(f"[Atualização Agendada] Erro: {e}")
+            finally:
+                # Garante que a conexão seja fechada
+                if conn:
+                    conn.close()
+
+            # Espera pelo próximo intervalo, verificando a flag running a cada 30 segundos
+            wait_time = interval_minutes * 60
+            chunks = wait_time // 30
+
+            for _ in range(chunks):
+                if not running:
+                    break
+                time.sleep(30)
+
+            # Espera o tempo restante
+            remainder = wait_time % 30
+            if remainder > 0 and running:
+                time.sleep(remainder)
+
+        except Exception as e:
+            print(f"[Atualização Agendada] Erro inesperado: {e}")
+            time.sleep(60)  # Espera 1 minuto antes de tentar novamente em caso de erro
+
+
+def backfill_esports(
+    start_date_str=None,
+    end_date_str=None,
+    workers=4,
+    limit_days=None,
+    specific_leagues=None,
+    update_scores=False,
+    update_interval=30,
+):
     """Processa eventos históricos (backfill) para datas e ligas específicas."""
     print(f"Iniciando backfill com {workers} workers")
 
@@ -499,6 +557,19 @@ def backfill_esports(start_date_str=None, end_date_str=None, workers=4, limit_da
     total_tasks = len(tasks)
     completed_tasks = 0
 
+    # Se a atualização de placares estiver habilitada, inicia a thread de atualização
+    score_update_thread = None
+    if update_scores:
+        print(f"Habilitando atualização automática de placares a cada {update_interval} minutos")
+        import threading
+
+        score_update_thread = threading.Thread(
+            target=run_scheduled_score_updates,
+            args=(update_interval,),
+            daemon=True,  # Thread daemon para encerrar quando o programa principal terminar
+        )
+        score_update_thread.start()
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             # Criar um dict para mapear futures para suas respectivas tarefas
@@ -540,6 +611,13 @@ def backfill_esports(start_date_str=None, end_date_str=None, workers=4, limit_da
     except Exception as e:
         print(f"Erro durante o backfill: {e}")
         traceback.print_exc()
+    finally:
+        # Sinaliza para a thread de atualização de placares parar
+        running = False
+
+        if score_update_thread:
+            print("Aguardando finalização da thread de atualização de placares...")
+            score_update_thread.join(timeout=60)  # Espera até 60 segundos pela thread terminar
 
     print(f"\nBackfill concluído:")
     print(f"Total de tarefas: {total_tasks}")
@@ -699,13 +777,27 @@ def fetch_and_process_league_day(conn, api_client, target_date, league_id):
     return total_jogos
 
 
+def update_pending_scores(conn, api_client):
+    """Atualiza placares de jogos passados que ainda não têm placar registrado."""
+    print("===== Iniciando atualização de placares pendentes =====")
+
+    start_time = time.time()
+    updated_count = update_pending_event_scores(conn)
+
+    duration = time.time() - start_time
+    print(f"===== Atualização de placares concluída em {duration:.2f} segundos =====")
+    print(f"Total de eventos atualizados: {updated_count}")
+
+    return updated_count
+
+
 def main():
     parser = argparse.ArgumentParser(description="Coletor de dados da BetsAPI com janela de 60 dias.")
     parser.add_argument(
         "--mode",
-        choices=["daily", "backfill"],
+        choices=["daily", "backfill", "update-scores"],
         default="daily",
-        help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica de 60 dias.",
+        help="Modo de execução: 'daily' (padrão) para atualização diária, 'backfill' para busca histórica, 'update-scores' para atualizar placares pendentes.",
     )
     parser.add_argument(
         "--workers", type=int, default=4, help="Número de workers para execução paralela (somente no modo backfill)."
@@ -715,6 +807,22 @@ def main():
     )
     parser.add_argument("--start-date", type=str, help="Data inicial no formato YYYYMMDD (somente para backfill).")
     parser.add_argument("--end-date", type=str, help="Data final no formato YYYYMMDD (somente para backfill).")
+    parser.add_argument(
+        "--update-scores-after",
+        action="store_true",
+        help="Atualiza placares pendentes após o backfill ou atualização diária.",
+    )
+    parser.add_argument(
+        "--update-scores-during",
+        action="store_true",
+        help="Atualiza placares periodicamente durante o backfill (em modo paralelo).",
+    )
+    parser.add_argument(
+        "--update-interval",
+        type=int,
+        default=30,
+        help="Intervalo em minutos entre as atualizações de placares durante o backfill (padrão: 30).",
+    )
     args = parser.parse_args()
 
     print(f"Executando em modo: {args.mode}")
@@ -724,6 +832,10 @@ def main():
             print(f"Data inicial: {args.start_date}")
         if args.end_date:
             print(f"Data final: {args.end_date}")
+    if args.update_scores_after:
+        print("Placares pendentes serão atualizados após a operação principal.")
+    if args.update_scores_during and args.mode == "backfill":
+        print(f"Placares pendentes serão atualizados a cada {args.update_interval} minutos durante o backfill.")
 
     api_client = BetsAPIClient()
 
@@ -732,11 +844,31 @@ def main():
             # Atualização diária usa uma única conexão gerenciada
             with get_db_connection() as conn:
                 run_daily_update(conn, api_client)
+
+                # Atualiza placares pendentes se solicitado
+                if args.update_scores_after:
+                    update_pending_scores(conn, api_client)
+
         elif args.mode == "backfill":
             # Backfill gerencia suas próprias conexões por thread
             backfill_esports(
-                start_date_str=args.start_date, end_date_str=args.end_date, workers=args.workers, limit_days=args.days
+                start_date_str=args.start_date,
+                end_date_str=args.end_date,
+                workers=args.workers,
+                limit_days=args.days,
+                update_scores=args.update_scores_during,
+                update_interval=args.update_interval,
             )
+
+            # Atualiza placares pendentes após o backfill, se solicitado
+            if args.update_scores_after and not args.update_scores_during:
+                with get_db_connection() as conn:
+                    update_pending_scores(conn, api_client)
+
+        elif args.mode == "update-scores":
+            # Atualização de placares pendentes usa uma única conexão gerenciada
+            with get_db_connection() as conn:
+                update_pending_scores(conn, api_client)
 
     except Exception as e:
         print(f"Erro inesperado não tratado na execução principal ({args.mode}): {e}")

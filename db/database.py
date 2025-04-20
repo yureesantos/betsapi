@@ -278,3 +278,93 @@ def delete_old_events(conn, days_to_keep=60):
         print(f"Erro ao deletar eventos antigos: {e}")
         # conn.rollback() # Rollback gerenciado pelo context manager
         raise  # Re-levanta a exceção para ser tratada no main
+
+
+def update_pending_event_scores(conn):
+    """
+    Busca eventos sem placar que já deveriam ter acontecido (data passada) e
+    atualiza o status/placar deles fazendo uma nova consulta à API.
+
+    Retorna a quantidade de eventos atualizados.
+    """
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    threshold = now - timedelta(hours=3)  # Eventos concluídos há pelo menos 3 horas
+
+    # Busca eventos sem placar que já deveriam ter terminado
+    query_get_pending = """
+    SELECT event_id, event_timestamp, league_id 
+    FROM events 
+    WHERE (final_score IS NULL OR final_score = '') 
+    AND event_timestamp < %s 
+    AND sport_id = 1
+    ORDER BY event_timestamp DESC;
+    """
+
+    updated_count = 0
+
+    try:
+        with get_cursor(conn) as cur:
+            cur.execute(query_get_pending, (threshold,))
+            pending_events = cur.fetchall()
+
+            if not pending_events:
+                print(f"Nenhum evento pendente de atualização de placar encontrado.")
+                return 0
+
+            print(f"Encontrados {len(pending_events)} eventos para atualizar o placar.")
+
+            # Cria um cliente API para consultar os eventos
+            from api.client import BetsAPIClient
+
+            api_client = BetsAPIClient()
+
+            for event in pending_events:
+                event_id = event["event_id"]
+                print(f"Buscando atualização para evento ID: {event_id}")
+
+                # Constrói um ID de evento para buscar na API
+                try:
+                    # Busca o evento diretamente pelo ID
+                    # Usa o endpoint de detalhes do evento
+                    # Ajuste conforme necessário para a API específica
+                    endpoint = f"{api_client.base_url_v1}/event/view"
+                    params = {"event_id": event_id}
+
+                    event_data = api_client._make_request(endpoint, params)
+
+                    if event_data and event_data.get("success") == 1 and "results" in event_data:
+                        result = event_data["results"]
+
+                        # Extrai o placar, se disponível
+                        score = result.get("ss", "")
+
+                        if score:
+                            # Atualiza o placar no banco de dados
+                            update_query = """
+                            UPDATE events 
+                            SET final_score = %s, updated_at = NOW() 
+                            WHERE event_id = %s;
+                            """
+
+                            cur.execute(update_query, (score, event_id))
+                            updated_count += 1
+                            print(f"  → Evento ID {event_id} atualizado com placar: {score}")
+                        else:
+                            print(f"  → Evento ID {event_id} ainda sem placar disponível.")
+                    else:
+                        print(f"  → Não foi possível obter dados para o evento ID {event_id}")
+
+                except Exception as e:
+                    print(f"Erro ao atualizar evento ID {event_id}: {e}")
+                    continue
+
+            # Commit após processar todos os eventos
+            conn.commit()
+
+        print(f"Atualização completa. {updated_count} eventos tiveram seu placar atualizado.")
+        return updated_count
+
+    except Exception as e:
+        print(f"Erro ao atualizar placares pendentes: {e}")
+        conn.rollback()
+        raise
